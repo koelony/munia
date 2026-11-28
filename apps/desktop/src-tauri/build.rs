@@ -1,8 +1,23 @@
 fn main() {
-    #[cfg(target_os = "windows")]
-    println!(
-        "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
-    );
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_os == "windows" && target_env == "msvc" {
+        println!(
+            "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+        );
+    } else if target_os == "windows" && target_env == "gnu" {
+        // ggml-cpu.cpp calls RegOpenKeyExA/RegQueryValueExA/RegCloseKey directly, while
+        // windows-targets uses raw-dylib and omits -ladvapi32 from the GNU linker line.
+        println!("cargo:rustc-link-arg=-ladvapi32");
+        println!("cargo:rerun-if-env-changed=ORATYPE_WIN_VULKAN_SDK");
+        if let Some(sdk_dir) = std::env::var_os("ORATYPE_WIN_VULKAN_SDK").filter(|v| !v.is_empty())
+        {
+            let sdk_lib = std::path::Path::new(&sdk_dir).join("lib");
+            if sdk_lib.join("libvulkan.dll.a").is_file() {
+                println!("cargo:rustc-link-search=native={}", sdk_lib.display());
+            }
+        }
+    }
 
     #[cfg(target_os = "macos")]
     link_clang_runtime();

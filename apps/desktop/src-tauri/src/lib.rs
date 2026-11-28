@@ -35,6 +35,7 @@ pub mod tray;
 pub mod updates;
 pub mod voice_intent;
 pub mod web_search;
+pub mod windows_backdrop;
 
 pub use hotkey::{default_ask_shortcut, default_shortcut, parse_hotkey};
 pub use tray::{refresh_tray, TrayHandle};
@@ -221,14 +222,21 @@ pub(crate) fn apply_dock_visibility(app: &tauri::AppHandle, show_in_dock: bool) 
             });
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let _ = show_in_dock;
+        apply_overlay_windows(app);
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let _ = (app, show_in_dock);
 }
 
 /// Labels of the windows that float over other apps: the pill and the Ask panel.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const OVERLAY_WINDOW_LABELS: [&str; 2] = ["capsule", ask_panel::ASK_WINDOW_LABEL];
 
 /// Lets the pill and the Ask panel show over full-screen apps (see `overlay_window`).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn apply_overlay_windows(app: &tauri::AppHandle) {
     for label in OVERLAY_WINDOW_LABELS {
         if let Some(window) = app.get_webview_window(label) {
@@ -1244,8 +1252,9 @@ const LOG_FOLDER: &str = "OraType";
 #[cfg(all(target_os = "macos", feature = "dev-build"))]
 const LOG_FOLDER: &str = "OraType Dev";
 
-/// Where the log file lives: `~/Library/Logs/OraType/oratype.log` on macOS (open it with
-/// Console.app or any editor). The log holds timings, sizes and errors only, never dictated text.
+/// Where the log file lives: `~/Library/Logs/OraType/oratype.log` on macOS and
+/// `%LOCALAPPDATA%\Munia\Logs\munia.log` on Windows. The log holds timings, sizes and
+/// errors only, never dictated text.
 fn log_file_path() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -1257,7 +1266,14 @@ fn log_file_path() -> Option<std::path::PathBuf> {
                 .join("oratype.log"),
         )
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        Some(base.join(APP_NAME).join("Logs").join("munia.log"))
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         Some(std::env::temp_dir().join("oratype").join("oratype.log"))
     }
@@ -1378,6 +1394,9 @@ pub fn run() {
             // Initialize data directory and database
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
+            #[cfg(target_os = "windows")]
+            let db_path = data_dir.join("munia.db");
+            #[cfg(not(target_os = "windows"))]
             let db_path = data_dir.join("oratype.db");
             // Unmute the output if a previous run crashed while it held the mute.
             audio::output_mute::init(&data_dir);
@@ -1416,6 +1435,11 @@ pub fn run() {
             let mut initial_config =
                 tauri::async_runtime::block_on(config_manager.load()).unwrap_or_default();
             sync_auto_start_preference(&app_handle, &config_manager, &mut initial_config);
+            #[cfg(target_os = "windows")]
+            {
+                let dark = initial_config.theme.eq_ignore_ascii_case("dark");
+                windows_backdrop::apply_to_main_window(&app_handle, dark);
+            }
             // Plan `onboarding-shortcut-gate`: until onboarding is finished no shortcut runs.
             // Set before any shortcut is registered, so nothing slips through before the
             // window loads and tells us which page it shows.
@@ -1695,7 +1719,7 @@ pub fn run() {
                 }
             }
 
-            tracing::info!("OraType started");
+            tracing::info!("{APP_NAME} started");
 
             // Plan `language-prompt-library`: the daily check for languages with auto-update on.
             commands::language_presets::start_auto_updates(app_handle.clone());
@@ -1761,6 +1785,7 @@ pub fn run() {
             updates::install_update,
             updates::restart_to_update,
             set_capsule_frame,
+            overlay_window::set_overlay_visible,
             ask_panel::copy_ask_text,
             ask_panel::insert_ask_text,
             commands::audio::list_input_devices,
@@ -1799,6 +1824,8 @@ pub fn run() {
             commands::stt::get_stt_recording_capability,
             commands::stt::test_speech_preset,
             commands::speech_setup::get_speech_setup_status,
+            commands::speech_setup::get_builtin_backend_info,
+            windows_backdrop::sync_main_window_backdrop,
             commands::speech_setup::start_speech_setup,
             commands::speech_setup::cancel_speech_setup,
             commands::speech_setup::list_speech_models,
